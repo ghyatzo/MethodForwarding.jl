@@ -15,9 +15,7 @@ export @forward
 # 	{:Sym => :sym, ...}
 # output:
 #	Tuple of :Sym => :sym
-function isvalid_type(e::Expr)
-    isexpr(e, :curly) || isexpr(e, :where)
-end
+isvalid_type(e::Expr) = isexpr(e, :curly) || isexpr(e, :where)
 isvalid_type(s::Symbol) = true
 
 function isvalid_pair(e::Expr)
@@ -58,10 +56,12 @@ function expand_to_pairs(T, fieldnames, fieldtypes)
 
     for k in keys(type_count)
         if type_count[k] != count(isequal(k), fieldtypes)
-            throw(ArgumentError("""
-            	Mismatch between number of implicit `$k` to be derived compared to explicit fields of type `$k` in the struct.
-            	Specify the derive types by using the explicit notation: $k => <Symbol of the field name> or match the number of fields in the struct.
-            """))
+            throw(ArgumentError(
+                "Mismatch between number of implicit `$k` to be derived" *
+                "compared to explicit fields of type `$k` in the struct.\n" *
+                "Specify the derive types by using the explicit notation:" *
+                "$k => <Symbol of the field name> or match the number of fields in the struct."
+            ))
         end
     end
 
@@ -172,7 +172,7 @@ function forward(_module_, @nospecialize(T), @nospecialize(S), @nospecialize(M))
         panic("Can't forward over Any.")
     end
 
-    # exteact the new struct type and gensym its type parameters if any
+    # extract the new struct type and gensym its type parameters if any
     if isexpr(Stype, :curly)
         structbasename = Stype.args[1]
         params = Stype.args[2:end]
@@ -193,7 +193,8 @@ function forward(_module_, @nospecialize(T), @nospecialize(S), @nospecialize(M))
         tvs = Base.unwrap_unionall(sig).parameters
         for tv in tvs
             !isa(tv, TypeVar) && continue
-            push!(get!(forwardtvs, tv.name, []), TypeVar(Symbol("#", tv.name), tv.lb, tv.ub))
+            gensymd_tv = TypeVar(Symbol("#", tv.name), tv.lb, tv.ub)
+            push!(get!(forwardtvs, tv.name, []), gensymd_tv)
         end
     end
     # in case we have multiple tvs with the same name, we want to coalesce them
@@ -218,16 +219,20 @@ function forward(_module_, @nospecialize(T), @nospecialize(S), @nospecialize(M))
     # get a set of methods that contain at least all our types singularly
     candidate_methods = Set()
     for mod_or_func in materialized_filters
-        union!(candidate_methods, intersect(Set.(methodswith.(forwardsig, (mod_or_func,); supertypes=true))...))
+        # get a list of all methods that have all the required types
+        allmethods_sets = Set.(methodswith.(forwardsig, (mod_or_func,); supertypes=true))
+
+        union!(candidate_methods, intersect(allmethods_sets...))
     end
 
-    exclude_list = ()
+    exclude_list = () # hardcoded ones, FIXME
     filter!(m -> begin
             all(m.name != excludedf for excludedf in exclude_list) &&
                 m.nargs > length(forwardsig) &&                # has enough arguments
                 !startswith(string(m.name), '@') &&  # is not a macro
                 fieldtype(m.sig, 1) <: Function   # is not a constructor
         end, candidate_methods)
+
     # Scan the signature and discard all methods that do not contain the correct
     # order. At the same time, match the matching positions with the method.
     allmethods = Dict()
@@ -281,11 +286,6 @@ function forward(_module_, @nospecialize(T), @nospecialize(S), @nospecialize(M))
             newargnames = swapat(argnames, positions, argnameswaps)
             newargtypes = swapat(argtypes, positions, argtypesswaps)
 
-            # concretesig = swapat(argtypes, positions, fill(forwardsig[1], length(positions)))
-            # @info concretesig
-            # returntype = Base.infer_return_type(getfield(m.module, m.name), Tuple(concretesig))
-            # @warn m concretesig returntype
-            # @info newargnames
             newdecl = zip(newargnames, newargtypes)
 
             # filter the tv to remove the typevars we substituted
@@ -293,7 +293,7 @@ function forward(_module_, @nospecialize(T), @nospecialize(S), @nospecialize(M))
             newtv = [filtered_method_tvs; values(forwardtvs)...]
 
             methodforwardcall = generate_forward_call(m, gensymd_Stype, newdecl, evaldpairs)
-            methodforwardcall == Symbol("#skip#") && continue
+            methodforwardcall == Symbol("#skip#") && continue # ignore methods with unnamed args but no default costructor
             newsignature = generate_signature(m, newdecl, newtv)
 
             ex = Expr(:(=), newsignature, methodforwardcall)
@@ -306,7 +306,7 @@ function forward(_module_, @nospecialize(T), @nospecialize(S), @nospecialize(M))
     for gm in methods_to_generate
         push!(retblk.args, gm)
     end
-    @info "All methods" methods_to_generate
+    # @info "All methods" methods_to_generate
 
     # @show esc(retblk)
     return esc(retblk)
@@ -354,7 +354,6 @@ function typevar_to_ast(tv)
 end
 
 kwexpr() = Expr(:parameters, :(kw...))
-
 
 function generate_signature(method, decl, typevars=[])
     mmodule = method.module

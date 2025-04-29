@@ -15,70 +15,69 @@ struct Q end
 # test parsing
 @testset "Brace Parsing" begin
     patterns = [
-        :Q,
-        :(P => :p),
+        :({Q}),
+        :({P => :p}),
         :({A, B}),
         :({T, T}),
         :({P => :p, A => :a, B}),
         :({P => :p, T, T})
     ]
     parse_result = [
-        (:Q,),
-        (:(P => :p),),
-        (:A, :B),
-        (:T, :T),
-        (:(P => :p), :(A => :a), :B),
-        (:(P => :p), :T, :T)
-    ]
-    bad_patterns = [
-        :([Q, A, B]), # vec instead of bracers
-        :((Q, A, B) => :a), # bad pair
-        :(P => A) # bad pair
+        (Q,),
+        (P => :p,),
+        (A, B),
+        (T, T),
+        (P => :p, A => :a, B),
+        (P => :p, T, T)
     ]
     @assert length(patterns) == length(parse_result)
     @testset for (i, pattern) in enumerate(patterns)
-        @test MethodForwarding.parse_braces(pattern) == parse_result[i]
-    end
-
-    for i in eachindex(bad_patterns)
-        @test_throws ArgumentError MethodForwarding.parse_braces(bad_patterns[i])
+        @test MethodForwarding.parse_braces(@__MODULE__, pattern) == parse_result[i]
     end
 end
 # test expanding
 @testset "Expand Types" begin
     parse_result = [
-        (:Q,),
-        (:(P => :p),),
-        (:A, :B),
-        (:T, :T),
-        (:(P => :p), :(A => :a), :B),
-        (:(P => :p), :T, :T)
+        (Q,),
+        (P => :p,),
+        (A, B),
+        (T, T),
+        (P => :p, A => :a, B),
+        (P => :p, T, T),
+        (Array,),
+        (Array{S,N} where {S,N},),
+        (Array{S,N} where {S<:Integer,N},),
     ]
-    struct Wrap
+    struct NoExists end
+    struct Wrap{S,N}
         a::A
         b::B
         t1::T
         t2::T
         q::Q
         p::P
+        arr::Array{S,N}
     end
     fnames = fieldnames(Wrap)
-    ftypes = Symbol.(fieldtypes(Wrap))
+    ftypes = fieldtypes(Wrap)
 
     expand_results = [
-        (:(Q => :q),),
-        (:(P => :p),),
-        (:(A => :a), :(B => :b)),
-        (:(T => :t1), :(T => :t2)),
-        (:(P => :p), :(A => :a), :(B => :b)),
-        (:(P => :p), :(T => :t1), :(T => :t2))
+        (Q => :q,),
+        (P => :p,),
+        (A => :a, B => :b),
+        (T => :t1, T => :t2),
+        (P => :p, A => :a, B => :b),
+        (P => :p, T => :t1, T => :t2),
+        (Array => :arr,),
+        (Array{S,N} where {S,N} => :arr,),
+        (Array{S,N} where {S<:Integer,N} => :arr,)
     ]
 
     bad_parses = [
-        (:T, :T, :T), # mismatching number of implicit fields
-        (:(Noexist => :a),),# non existant field type in pair
-        (:(P => :noexists),),# non existant field name in pair
-        (:Noexists,) # non existant field type as symbol
+        (T, T, T), # mismatching number of implicit fields
+        (NoExists => :a,),# non existant field type in pair
+        (P => :noexists,),# non existant field name in pair
+        (NoExists,), # non existant field type as symbol
     ]
 
     @assert length(expand_results) == length(parse_result)
@@ -90,39 +89,6 @@ end
         @test_throws ArgumentError MethodForwarding.expand_to_pairs(badparse, fnames, ftypes)
     end
 end
-
-@testset "Expand Parametric Types" begin
-    parse_result = [
-        (:(Array{M,N} where {M,N}),),
-        (:(Array{M,N} where {M<:Integer,N}),)
-    ]
-    S = :(struct WrapParam{M,N}
-        v::Array{M,N}
-    end)
-    @capture(S, struct Sdef_
-        Sfields__
-    end)
-    ftypes = []
-    fnames = []
-    for expr in Sfields
-        @capture(expr, fn_::ft_ | fn_) || error("unsupported field.")
-
-        ft = isnothing(ft) ? :Any : ft
-        push!(ftypes, ft)
-        push!(fnames, fn)
-    end
-
-    expand_results = [
-        (:(Array{M,N} where {M,N} => :v),),
-        (:(Array{M,N} where {M<:Integer,N} => :v),),
-    ]
-
-    @assert length(expand_results) == length(parse_result)
-    @testset for (i, pattern) = enumerate(parse_result)
-        @test MethodForwarding.expand_to_pairs(pattern, fnames, ftypes) == expand_results[i]
-    end
-end
-
 
 
 # Automatic Derivations
@@ -194,7 +160,6 @@ function scale!(p::TestRegularPolygon, scale::Real)
 end
 
 # Automatic derivation
-@forward Polygon,
 mutable struct RegularPolygon <: AbstractPolygon
     p::Polygon
     radius::Float64
@@ -206,6 +171,8 @@ function RegularPolygon(n::Integer, radius::Real)
     c = radius .* exp.(im .* θ)
     return RegularPolygon(Polygon(real(c), imag(c)), radius)
 end
+
+@forward RegularPolygon => Polygon
 
 testregpoly = TestRegularPolygon(4, 5.0)
 derivedregpoly = RegularPolygon(4, 5.0)
@@ -230,19 +197,25 @@ scale!(derivedregpoly, 1)
 method1(a::Int, b::Int) = a + b
 method2(a::Int, b::Int) = a - b
 method3(a::Int, b::Int, c::Int) = a + b + c
+
 @testset "Multiple Forward" begin
 
-    @forward {Int, Int} struct Point
+    @forward struct Point
+        x::Int
+        y::Int
+    end => {Int, Int}
+
+    struct Point
         x::Int
         y::Int
     end
+    @forward Point => {Int, Int}
 
     p = Point(1, 1)
 
     @test method1(p) == 2
     @test method3(1, p) == 3
     @test method3(p, 1) == 3
-
 end
 
 module AnotherModule
@@ -253,24 +226,26 @@ end
 using .AnotherModule
 @testset "Filtering" begin
 
-    @forward {Int, Int}, struct Point2
+    struct Point2
         x::Int
         y::Int
-    end, (AnotherModule,)
+    end
+    @forward Point2 => {Int, Int} [AnotherModule]
 
     p2 = Point2(1, 1)
     @test testmethod(p2) == 102
     @test_throws MethodError method1(p2)
 
-    @forward {Int, Int} struct Point3
+    struct Point3
         x::Int
         y::Int
-    end (
-        method1,
+    end
+    @forward Point3 => {Int, Int} [
+        method2,
         method3,
         AnotherModule,
         AnotherModule.privatemethod
-    )
+    ]
     p3 = Point3(1, 1)
 
     @test method1(p3) == 2

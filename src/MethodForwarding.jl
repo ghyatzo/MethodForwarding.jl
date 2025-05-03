@@ -33,14 +33,14 @@ function trygetglobal(mod, sym)
     isdefined(mod, sym) ? getglobal(mod, sym) : throw(UndefVarError(sym, mod))
 end
 
-macro forward(ex, F=:([$(Symbol(__module__))]))
+macro forward(ex, F=:([$(__module__)]))
     ispair(ex) && isexpr(F, :vect) ||
         panic("Usage: @forward <struct name> => <forward pattern> [[optional filters]]")
 
     # normalize the input to always be of the form:
     #   StructName | StructName{...} => { ... } [ ... ]
 
-    S = esc(ex.args[2])
+    S = ex.args[2]
     S isa Symbol || isexpr(S, :curly) ||
         panic("Struct type identifier must be either: StructName or StructName{A,B,C,...}")
 

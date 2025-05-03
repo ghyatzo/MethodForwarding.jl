@@ -98,7 +98,7 @@ function parse_struct_type(_module_, S)
     if isempty(tvs)
         gensymd_Sargtype = S
     else
-        gensymd_Sargtype = Expr(:curly, structbasename, gensymd_params...)
+        gensymd_Sargtype = Expr(:curly, Ssym, gensymd_params...)
     end
 
     Stypes = [Base.unwrap_unionall(ft) for ft in fieldtypes(Sdef)]

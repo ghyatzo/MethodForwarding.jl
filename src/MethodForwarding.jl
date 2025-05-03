@@ -170,14 +170,46 @@ function parse_filters(_module_, filters)
             f isa Function ? push!(materialized_filters, f) : panic("$f is not a Function")
 
         elseif filter isa Symbol
+
             mf = trygetglobal(_module_, filter)
 
-            mf isa Union{Module,Function} ? push!(materialized_filters, mf) :
-            panic("$mf must be a Module or a Function")
+            if mf isa Function
+                push!(materialized_filters, mf)
+            elseif mf isa Module
+                for fsym in names(mf)
+                    # we don't really want to error for any shenanigans in modules we don't control.
+                    # We only want to error on explicitly typed expressions. (on the why not using trygetglobal)
+                    isdefined(mf, fsym) || continue
+
+                    f = getglobal(mf, fsym)
+                    f isa Function || continue
+
+                    push!(materialized_filters, f)
+                end
+            else
+                panic("$mf is not a Module or a Function")
+            end
+
+        elseif filter isa Module
+            # if the filter is the module itself, then
+            # we can see all functions, not only the public/exported ones.
+            symbollist = filter == _module_ ?
+                         names(_module_, all=true) : names(filter)
+
+            for fsym in symbollist
+                isdefined(filter, fsym) || continue
+
+                f = getglobal(filter, fsym)
+                f isa Function || continue
+
+                push!(materialized_filters, f)
+            end
         else
-            panic("unsupported filter: $filter")
+            panic("unsupported filter: $filter - ($(typeof(filter)))")
         end
     end
+
+    @assert all(f -> f isa Base.Callable, materialized_filters)
 
     return materialized_filters
 end

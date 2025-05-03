@@ -290,15 +290,32 @@ function forward(_module_, @nospecialize(T), @nospecialize(S), @nospecialize(M))
 
     # builds a set of methods that contain our signature:
     # get a set of methods that contain at least all our types singularly
-    candidate_methods = Set()
-    for mod_or_func in materialized_filters
-        # get a list of all methods that have all the required types
-        allmethods_sets = Set.(methodswith.(forwardsig, (mod_or_func,); supertypes=true))
+    candidate_methods = Set{Method}()
+    methods_intersection = Set{Method}()
+    single_type_methods = Set{Method}()
+    for func in materialized_filters
+        empty!(methods_intersection)
 
-        union!(candidate_methods, intersect(allmethods_sets...))
+        # get a list of all methods that have all the required types
+        for single_type in forwardsig
+            empty!(single_type_methods)
+
+            # this is a bit internal, but whatever.
+            methodswith(single_type, func, single_type_methods; supertypes=true)
+
+            if isempty(methods_intersection)
+                union!(methods_intersection, single_type_methods)
+            else
+                intersect!(methods_intersection, single_type_methods)
+            end
+        end
+
+        # allmethods_sets = Set.(methodswith.(forwardsig, (mod_or_func,); supertypes=true))
+
+        union!(candidate_methods, methods_intersection)
     end
 
-    exclude_list = () # hardcoded ones, FIXME
+    exclude_list = (:eval, :include) # hardcoded ones, FIXME
     filter!(m -> begin
             all(m.name != excludedf for excludedf in exclude_list) &&
                 m.nargs > length(forwardsig) &&                # has enough arguments

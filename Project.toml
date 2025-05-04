@@ -1,7 +1,7 @@
 name = "MethodForwarding"
 uuid = "45e47a89-b455-4dd5-a62c-c007f63154db"
 authors = ["cschen <camillo.schenone@gmail.com>"]
-version = "0.2.0"
+version = "0.3.0"
 
 [deps]
 Combinatorics = "861a8166-3701-5b0c-9a16-15d98fcdc6aa"

@@ -172,8 +172,8 @@ function match_struct_fields(T, Sdef)
         if type_count[t] != count(equal_or_unionall_subtype(t), Stypes)
             panic(
                 "Mismatch between number of implicit `$t` to be derived" *
-                "compared to explicit fields of type `$t` in the struct.\n" *
-                "Specify the derive types by using the explicit notation:" *
+                " compared to explicit fields of type `$t` in the struct.\n" *
+                "Specify the field to match by using the explicit notation:" *
                 "$t => <fieldname symbol> or match the number of fields in the struct."
             )
         end
@@ -428,7 +428,9 @@ function forward(_module_, @nospecialize(T), @nospecialize(S), @nospecialize(M))
         for positions in combinations(swap_positions)
             ranges_overlap_pairwise(sort!(positions)) && continue
 
-            argnameswaps = [gensym(nameof(Stype)) for _ in 1:length(positions)]
+            # argnameswaps = [gensym(nameof(Stype)) for _ in 1:length(positions)]
+            argnameswaps = [gensym() for _ in 1:length(positions)]
+
             argtypesswaps = fill(fwd_argname, length(positions))
 
             newargnames = swapat(argnames, positions, argnameswaps)
@@ -454,7 +456,6 @@ function forward(_module_, @nospecialize(T), @nospecialize(S), @nospecialize(M))
     for gm in methods_to_generate
         push!(retblk.args, gm)
     end
-    @show retblk
     return esc(retblk)
 end
 

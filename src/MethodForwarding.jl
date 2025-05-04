@@ -49,28 +49,22 @@ macro forward(ex, F=:([$(__module__)]))
         T = Expr(:braces, T)
     end
 
-    @info "FWD" S T F
+    # @info "FWD" S T F
     forward(__module__, T, S, F.args)
 end
 
 function parse_braces(_module_, T)
     if Base.isexpr(T, :braces)
         return ntuple(length(T.args)) do i
-            if T.args[i] isa Symbol
-                return trygetglobal(_module_, T.args[i])
-            elseif isvalid_pair(T.args[i])
-                ex = T.args[i]
-                tsym = ex.args[2]
-                fsym = ex.args[3] isa QuoteNode ? ex.args[3].value : ex.args[3]
-                t = trygetglobal(_module_, tsym)
-                return t => fsym
+            if isvalid_type(T.args[i]) || isvalid_pair(T.args[i])
+                return Core.eval(_module_, T.args[i])
             else
                 panic("Pattern types must be either a DataType or a UnionAll.")
             end
         end
     end
     display(T)
-    throw(ArgumentError("Invalid pattern."))
+    panic("Invalid pattern.")
 end
 
 function parse_struct_type(_module_, S)
@@ -84,31 +78,76 @@ function parse_struct_type(_module_, S)
         panic("The struct must be either MyStruct or MyStruct{T,S,...}.")
     end
 
+    Sdef = trygetglobal(_module_, Ssym)
+
     # In case of a parametric definition, check that the parameters names are
     # the same as those in the actual structure definition.
-    Sdef = Base.unwrap_unionall(trygetglobal(_module_, Ssym))
-    tvs = getfield.(Sdef.parameters, :name)
+    tvs = getfield.(Base.unwrap_unionall(Sdef).parameters, :name)
     for dtv in decl_tvs
-        dtv ∉ tvs && panic("Unknown parameter $dtv in struct $Ssym")
+        dtv ∉ tvs && panic(
+            "Unknown parameter $dtv in struct $(Sdef)).\n"
+        )
     end
 
     # Generate the symbol to be used as argument type, if it has type parameters
     # gensym those.
     gensymd_params = [Symbol("#", p) for p in tvs]
-    if isempty(tvs)
-        gensymd_Sargtype = S
-    else
-        gensymd_Sargtype = Expr(:curly, Ssym, gensymd_params...)
-    end
-
-    Stypes = [Base.unwrap_unionall(ft) for ft in fieldtypes(Sdef)]
-    Snames = fieldnames(Sdef)
+    fwd_argname = isempty(tvs) ? Ssym : Expr(:curly, Ssym, gensymd_params...)
 
     # we return the unwrapped unionall name if the struct has parameters
-    return Sdef, Snames, Stypes, gensymd_Sargtype
+    return Sdef, fwd_argname
 end
 
-function expand_to_pairs(T, fieldnames, fieldtypes)
+function swaptvs_unionall(tvdict::AbstractDict, @nospecialize(u))
+    if !isa(u, UnionAll)
+        return u
+    end
+
+    var = u.var::TypeVar
+    nv = tvdict[var.name]::TypeVar
+    body = UnionAll(var, swaptvs_unionall(tvdict, u.body))
+    return UnionAll(nv, body{nv})
+end
+
+function strip_typebounds(@nospecialize(u))
+    if !isa(u, UnionAll)
+        return u
+    end
+
+    var = u.var::TypeVar
+    body = UnionAll(var, strip_typebounds(u.body))
+    nv = TypeVar(var.name)
+    return UnionAll(nv, body{nv})
+end
+
+function reinflate_unionall(u::Type)
+    body = u
+    for i in reverse(eachindex(u.parameters))
+        var = u.parameters[i]
+        body = UnionAll(var, body)
+    end
+    return body
+end
+
+function typevars_close_enough(tv::TypeVar, othertv::TypeVar)
+    tv === othertv && return true
+
+    return tv.name == othertv.name && tv.lb == othertv.lb && tv.ub == othertv.ub
+end
+
+equal_or_unionall_subtype(t::DataType, x::DataType) = t == x
+equal_or_unionall_subtype(::DataType, ::UnionAll) = false
+equal_or_unionall_subtype(::UnionAll, ::DataType) = false
+equal_or_unionall_subtype(u::UnionAll, x::UnionAll) = begin
+    Base.unwrap_unionall(u).name === Base.unwrap_unionall(x).name &&
+    u <: x
+end
+equal_or_unionall_subtype(tu) = Base.Fix1(equal_or_unionall_subtype, tu)
+
+function match_struct_fields(T, Sdef)
+
+    Sfields = fieldnames(Sdef)
+    Stypes = fieldtypes(Sdef)
 
     # Check for existance in the struct,
     # count all types in the pattern and their multiplicity
@@ -116,14 +155,13 @@ function expand_to_pairs(T, fieldnames, fieldtypes)
     for maybepair in T
         if maybepair isa Pair
             maybeua, fieldsym = maybepair
-            fieldsym ∉ fieldnames && field_not_in_struct(fieldsym)
+            fieldsym ∉ Sfields && field_not_in_struct(fieldsym)
         else
             maybeua = maybepair
         end
 
-        # Extract the generic UnionAll type
-        tkey = maybeua isa UnionAll ? getglobal(parentmodule(maybeua), nameof(maybeua)) : maybeua
-        tkey ∉ fieldtypes && type_not_in_struct(tkey)
+        tkey = maybeua
+        any(equal_or_unionall_subtype(tkey, st) for st in Stypes) || type_not_in_struct(tkey)
 
         type_count[tkey] = get(type_count, tkey, 0) + 1
     end
@@ -131,13 +169,13 @@ function expand_to_pairs(T, fieldnames, fieldtypes)
     # If the multiplicity of the types in the pattern does not match that of the
     # types in the structure, error.
     for t in keys(type_count)
-        if type_count[t] != count(isequal(t), fieldtypes)
-            throw(ArgumentError(
+        if type_count[t] != count(equal_or_unionall_subtype(t), Stypes)
+            panic(
                 "Mismatch between number of implicit `$t` to be derived" *
                 "compared to explicit fields of type `$t` in the struct.\n" *
                 "Specify the derive types by using the explicit notation:" *
                 "$t => <fieldname symbol> or match the number of fields in the struct."
-            ))
+            )
         end
     end
 
@@ -147,9 +185,10 @@ function expand_to_pairs(T, fieldnames, fieldtypes)
         t = T[i]
         t isa Pair && return t
 
-        tkey = t isa UnionAll ? getglobal(parentmodule(t), nameof(t)) : t
-        type_indexes[tkey] = findnext(isequal(tkey), fieldtypes, type_indexes[tkey]) + 1
-        fsym = fieldnames[type_indexes[tkey]-1]
+        tkey = t
+        type_indexes[tkey] = findnext(equal_or_unionall_subtype(tkey), Stypes, type_indexes[tkey]) + 1
+
+        fsym = Sfields[type_indexes[tkey]-1]
 
         # we return the original unmodified type, getting rid of the parameters is just for matching.
         return t => fsym
@@ -214,9 +253,6 @@ function parse_filters(_module_, filters)
     return materialized_filters
 end
 
-# @fwd MyName{A,B} => {T => :t, B => :b} [F1, F2, M1, M2, M3.F3]
-# @fwd MyStruct => P F
-# @fwd MyName{T,S} => Array{T,S} where {T<:Integer,S}
 
 function checkpiracy(_module_, Stype, filters)
 
@@ -235,9 +271,7 @@ end
 function forward(_module_, @nospecialize(T), @nospecialize(S), @nospecialize(M))
 
     Stype,
-    fieldnames,
-    fieldtypes,
-    gensymd_Sargtype = parse_struct_type(_module_, S)
+    fwd_argname = parse_struct_type(_module_, S)
 
     materialized_filters = parse_filters(_module_, M)
 
@@ -247,46 +281,80 @@ function forward(_module_, @nospecialize(T), @nospecialize(S), @nospecialize(M))
               " to forward on.")
     end
 
-    Tpairs = parse_braces(_module_, T)
+    type_pattern = parse_braces(_module_, T)
 
-    forwardpairs = expand_to_pairs(Tpairs, fieldnames, fieldtypes)
-    forwardsig = first.(forwardpairs)
+    forwardsig = ntuple(length(type_pattern)) do i
+        return type_pattern[i] isa Pair ? first(type_pattern[i]) : type_pattern[i]
+    end # unwrap existing pairs
+
     if any(s == Any for s in forwardsig)
         panic("Can't forward over Any.")
     end
 
-    # TODO: Continue from here downward
+    Sunwrap = Base.unwrap_unionall(Stype)
+    Sparams = getfield.(Sunwrap.parameters, :name)
 
     # Collect all typevars from our pattern
-    # and all the remaining ones from the struct definition
     forwardtvs = Dict()
     for sig in forwardsig
         tvs = Base.unwrap_unionall(sig).parameters
         for tv in tvs
             !isa(tv, TypeVar) && continue
-            gensymd_tv = TypeVar(Symbol("#", tv.name), tv.lb, tv.ub)
-            push!(get!(forwardtvs, tv.name, []), gensymd_tv)
+
+            # check that the parameters used in the type pattern names are the same as
+            # those in the structure.
+            if tv.name ∉ Sparams
+                panic("Type parameters in the pattern must match a type parameters of the struct.\n" *
+                      "$tv is not in $Sunwrap.")
+            end
+
+            push!(get!(forwardtvs, tv.name, []), tv)
         end
-    end
-    # in case we have multiple tvs with the same name, we want to coalesce them
-    # into a single supertype that represents both. And look for methods that dispatch on that supertype, since
-    # in the methodcall, the typeparameter will be only one, the one from the struct
-    for tvname in keys(forwardtvs)
-        length(forwardtvs[tvname]) == 1 && continue
-        local coalesced_tv = TypeVar(tvname, Union{})
-        for tv in forwardtvs[tvname]
-            lb = typejoin(coalesced_tv.lb, tv.lb)
-            ub = typejoin(coalesced_tv.ub, tv.ub)
-            coalesced_tv = TypeVar(tv.name, lb, ub)
-        end
-        forwardtvs[tvname] = coalesced_tv
     end
 
-    # the remaining parameters don't offer anything new in terms of bounds.
-    for p in getfield.(Stype.parameters, :name)
-        p ∈ keys(forwardtvs) && continue
-        forwardtvs[p] = TypeVar(Symbol("#", p))
+    # in case we have multiple tvs with the same name, widen the tvs
+    # into a single supertype that represents all.
+    # And look for methods that dispatch on that supertype, since
+    # in the methodcall, the typeparameter will be only one, the one from the struct
+    for tvname in keys(forwardtvs)
+        if length(forwardtvs[tvname]) == 1
+            forwardtvs[tvname] = first(forwardtvs[tvname])
+        else
+            local coalesced_tv = TypeVar(tvname, Union{})
+            for tv in forwardtvs[tvname]
+                lb = typeintersect(coalesced_tv.lb, tv.lb)
+                ub = typejoin(coalesced_tv.ub, tv.ub)
+                coalesced_tv = TypeVar(tv.name, lb, ub)
+            end
+            forwardtvs[tvname] = coalesced_tv
+        end
     end
+
+    # If the struct has any bounded typevar in its definition
+    # Then tighten the type pattern parameters.
+    Sparams = Base.unwrap_unionall(Stype).parameters
+    for p in Sparams
+        !isa(p, TypeVar) && continue
+
+        if p.name ∈ keys(forwardtvs)
+            tv = forwardtvs[p.name]
+            lb = typejoin(p.lb, tv.lb)
+            ub = typeintersect(p.ub, tv.ub)
+
+            (ub == Union{} || ub <: lb) &&
+                panic("Parametric type pattern bound is incompatible with the" *
+                      " type bounds in the struct.")
+
+            forwardtvs[p.name] = TypeVar(tv.name, lb, ub)
+        else
+            forwardtvs[p.name] = p
+        end
+    end
+
+    # We apply the typevar modifications we computed above to the desired type pattern
+    # to make it consistent.
+    constrained_type_pattern = swaptvs_unionall.((forwardtvs,), type_pattern)
+    forwardpairs = match_struct_fields(constrained_type_pattern, Stype)
 
     # builds a set of methods that contain our signature:
     # get a set of methods that contain at least all our types singularly
@@ -316,7 +384,7 @@ function forward(_module_, @nospecialize(T), @nospecialize(S), @nospecialize(M))
     end
 
     exclude_list = (:eval, :include) # hardcoded ones, FIXME
-    filter!(m -> begin
+    filter!(function (m)
             all(m.name != excludedf for excludedf in exclude_list) &&
                 m.nargs > length(forwardsig) &&                # has enough arguments
                 !startswith(string(m.name), '@') &&  # is not a macro
@@ -348,9 +416,9 @@ function forward(_module_, @nospecialize(T), @nospecialize(S), @nospecialize(M))
         msig = m.sig
 
         # get all typevars used in the method signature
-        tv = []
+        method_tvs = []
         while msig isa UnionAll
-            push!(tv, msig.var)
+            push!(method_tvs, msig.var)
             msig = msig.body
         end
 
@@ -361,7 +429,7 @@ function forward(_module_, @nospecialize(T), @nospecialize(S), @nospecialize(M))
             ranges_overlap_pairwise(sort!(positions)) && continue
 
             argnameswaps = [gensym(nameof(Stype)) for _ in 1:length(positions)]
-            argtypesswaps = fill(gensymd_Sargtype, length(positions))
+            argtypesswaps = fill(fwd_argname, length(positions))
 
             newargnames = swapat(argnames, positions, argnameswaps)
             newargtypes = swapat(argtypes, positions, argtypesswaps)
@@ -369,10 +437,11 @@ function forward(_module_, @nospecialize(T), @nospecialize(S), @nospecialize(M))
             newdecl = zip(newargnames, newargtypes)
 
             # filter the tv to remove the typevars we substituted
-            filtered_method_tvs = filter(tvar -> tvar.name in newargtypes, tv)
-            newtv = [filtered_method_tvs; values(forwardtvs)...]
+            filter!(tvar -> tvar.name in newargtypes, method_tvs)
+            gensymd_tvs = gensym_typevar.(values(forwardtvs))
+            newtv = [method_tvs; gensymd_tvs...]
 
-            methodforwardcall = generate_forward_call(m, gensymd_Sargtype, newdecl, forwardpairs)
+            methodforwardcall = generate_forward_call(m, fwd_argname, newdecl, forwardpairs)
             methodforwardcall == Symbol("#skip#") && continue # ignore methods with unnamed args but no default costructor
             newsignature = generate_signature(m, newdecl, newtv)
 
@@ -382,13 +451,14 @@ function forward(_module_, @nospecialize(T), @nospecialize(S), @nospecialize(M))
     end
 
     retblk = Expr(:block)
-    # push!(retblk.args, S)
     for gm in methods_to_generate
         push!(retblk.args, gm)
     end
-
+    @show retblk
     return esc(retblk)
 end
+
+gensym_typevar(tv::TypeVar) = TypeVar(Symbol("#", tv.name), tv.lb, tv.ub)
 
 function swapat(base, positions, swaps)
     @assert length(positions) == length(swaps)

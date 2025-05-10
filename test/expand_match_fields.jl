@@ -34,10 +34,6 @@ struct Wrap{S,N}
     arr::Array{S,N}
 end
 
-struct boundarr{T<:Real,N}
-    arr::Array{T,N}
-end
-
 expand_results = [
     (Q => :q,),
     (P => :p,),

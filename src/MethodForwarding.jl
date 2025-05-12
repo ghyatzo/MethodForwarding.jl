@@ -254,7 +254,7 @@ function parse_filters(_module_, filters)
 end
 
 
-function checkpiracy(_module_, Stype, filters)
+function checkpiracy(_module_, Stype::Type, filters)
 
     # If we own the type we can do whatever we like.
     parentmodule(Stype) == _module_ && return false
@@ -270,15 +270,14 @@ end
 
 function forward(_module_, @nospecialize(T), @nospecialize(S), @nospecialize(M))
 
-    Stype,
-    fwd_argname = parse_struct_type(_module_, S)
+    Stype, fwd_argname = parse_struct_type(_module_, S)
 
     materialized_filters = parse_filters(_module_, M)
 
     if checkpiracy(_module_, Stype, materialized_filters)
         panic("Type piracy detected. You can't forward types you don't own on function you don't own.\n" *
               "Forwarding macros should live in the same module as the type being forwarded or the functions " *
-              " to forward on.")
+              "to forward on.")
     end
 
     type_pattern = parse_braces(_module_, T)
@@ -295,6 +294,7 @@ function forward(_module_, @nospecialize(T), @nospecialize(S), @nospecialize(M))
     Sparams = getfield.(Sunwrap.parameters, :name)
 
     # Collect all typevars from our pattern
+    # TODO: Use an ordered Dict! we want to preserve the order of the type variables.
     forwardtvs = Dict()
     for sig in forwardsig
         tvs = Base.unwrap_unionall(sig).parameters
@@ -377,8 +377,6 @@ function forward(_module_, @nospecialize(T), @nospecialize(S), @nospecialize(M))
                 intersect!(methods_intersection, single_type_methods)
             end
         end
-
-        # allmethods_sets = Set.(methodswith.(forwardsig, (mod_or_func,); supertypes=true))
 
         union!(candidate_methods, methods_intersection)
     end

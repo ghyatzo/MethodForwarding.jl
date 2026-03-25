@@ -424,6 +424,7 @@ function forward(_module_, @nospecialize(T), @nospecialize(S), @nospecialize(M))
         argtypes = fieldtype.(m.sig, 2:m.nargs)
 
         for positions in combinations(swap_positions)
+            isempty(positions) && continue
             ranges_overlap_pairwise(sort!(positions)) && continue
 
             # argnameswaps = [gensym(nameof(Stype)) for _ in 1:length(positions)]
@@ -461,6 +462,8 @@ gensym_typevar(tv::TypeVar) = TypeVar(Symbol("#", tv.name), tv.lb, tv.ub)
 
 function swapat(base, positions, swaps)
     @assert length(positions) == length(swaps)
+
+    isempty(positions) && return copy(base)
 
     swapped = []
     for ip in eachindex(positions)
